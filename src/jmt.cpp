@@ -4,11 +4,8 @@
 #include <fstream>
 #include <vector>
 
-const double jmax = 10;
-const double amin = -10;
-const double amax = 10;
-const double max_speed = 20;
-const double dt = 0.02;
+#include "constants.h"
+
 double secant(const std::function<double(double)>& f,double min,double max,double tol,const char* call_name) {
   double x0(min),x1(max);
   double f0(f(x0)),f1(f(x1));
@@ -184,20 +181,17 @@ std::tuple<std::function<double(double)>,double> achieveZeroAcelAndVel(double a0
     return h(toVpeak,fromVpeak,vpeak);
   }
 }
+
 std::vector<double> path(double a0,double v0,double vmin,double vmax,double delta_d);
 std::vector<double> path(double a0,double v0,double v1,double delta_d) {
-  std::vector<double> ret = path(a0,v0-v1,-v1,max_speed-v1,delta_d);
-  for(int i=0;i<ret.size();i++) {
-    ret[i]+=v1*(i+1)*dt;
-  }
-  return ret;
-}
+  double totalTimeEstimate = delta_d/((v0+v1)*0.5);
+  std::function<double(double)> jfn;
+  double timeTaken;
+  do {
+    std::tie(jfn,timeTaken) = achieveZeroAcelAndVel(a0,v0-v1,-v1,max_speed-v1,delta_d-v1*totalTimeEstimate);
+    totalTimeEstimate = (timeTaken+totalTimeEstimate)*0.5;
+  } while(fabs(timeTaken-totalTimeEstimate)*v1 > max_speed*dt);
 
-std::vector<double> path(double a0,double v0,double vmin,double vmax,double delta_d) {
-  std::vector<double> ret;
-  auto jfn_t = achieveZeroAcelAndVel(a0,v0,vmin,vmax,delta_d);
-  auto jfn = std::get<0>(jfn_t);
-  auto total_t = std::get<1>(jfn_t);
   double ap(a0),vp(v0),sp(0);
   for(double t = dt; t<=total_t;t+=dt) {
     double ac,vc,sc,jc;
@@ -212,6 +206,7 @@ std::vector<double> path(double a0,double v0,double vmin,double vmax,double delt
   }
   return ret;
 }
+
 
 void path(double a0,double v0,double vmin,double vmax,double delta_d,const char* fname) {
   auto jfn_t = achieveZeroAcelAndVel(a0,v0,vmin,vmax,delta_d);

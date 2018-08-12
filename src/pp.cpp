@@ -3,7 +3,8 @@
 #include <utility>
 #include <vector>
 #include "spline.h"
-const double lane_width = 4.0;
+#include "constants.h"
+
 std::pair<double, double> toRefFrame(double x, double y, double theta,
                                      double x0, double y0) {
   double dx(x - x0);
@@ -79,14 +80,18 @@ double yaw(double x1, double y1, double x2, double y2) {
 struct carData {
   double s, d, x, y, v;
   carData(double _s, double _d, double _x, double _y, double _v)
-      : s(_s), d(_d), x(_x), y(_y), v(_v) {}
+    : s(_s), d(_d), x(_x), y(_y), v(_v) {}
 };
 
-bool willCollideDuringLaneChange(carData ego,carData* carBehind,carData* carFront,std::function<std::vector<double>(double, double)>& xy) {
+bool willCollideDuringLaneChange(carData ego,
+				 carData* carBehind,
+				 carData* carFront,
+				 std::function<std::vector<double>(double, double)>& xy) {
   
 }
 
-double cost(
+double cost() {
+}
 
 
 // target d, target v
@@ -122,10 +127,30 @@ std::pair<std::vector<double>, std::vector<double>> jerkFreePoints(
   }
   return std::make_pair(xs, ys);
 }
+// spline,refx,refy,theta,lastx in reference coordinates
+std::tuple<tk::spline,double,double,double,double> getSpline(double x,double y, double yaw, double sf, double df,std::function<std::vector<double>(double,double)> xy) {
+  double theta = yaw; // transform angle
+  double r = 1.0;
+  auto p_last = xy(sf,df);
+  auto p_penultimate = xy(sf-r,df);
+  std::vector<double> xs({x,x+r*cos(yaw),p_penultimate[0],p_last[0]}),ys({y,y+r*sin(yaw),p_penultimate[1],p_last[1]}),x1s,y1s;
+  std::tie(x1s,y1s) = toRefFrame(xs,ys,theta,x,y);
+  tk::spline spline;
+  spline.set_points(x1s,y1s);
+  return std::make_tuple(spline,x,y,theta,x1s.back());  
+}
 
 std::pair<std::vector<double>, std::vector<double>> smoothPath(
-    double x, double y, double s, double d, double speed,
-    std::function<std::vector<double>(double, double)> xy) {}
+							       double x, double y, double yaw, double a0, double v0, double vf,double sf, double df,
+    std::function<std::vector<double>(double, double)> xy) {
+  tk::spline spline;
+  double xref,yref,theta,spline_x_max;
+  std::tie(spline,xref,yref,theta,spline_x_max) = getSpline(x,y,yaw,sf,df,xy);
+  double totalDist = length(spline,0,spline_x_max);
+  std::vector<double> x1s,y1s;
+  std::tie(x1s,y1s) = jerkFreePoints(spline,a0,v0,v1,totalDist);
+  return fromRefFrame(x1s,y1s,theta,xref,yref);
+}
 
 std::pair<std::vector<double>, std::vector<double>> path_plan(
     double max_s, double car_x, double car_y, double car_s, double car_d,
