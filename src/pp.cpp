@@ -77,29 +77,6 @@ double length(tk::spline& s, double x0, double x1) {
 double yaw(double x1, double y1, double x2, double y2) {
   std::atan2(y2 - y1, x2 - x1);
 }
-struct carData {
-  double s, d, x, y, v;
-  carData(double _s, double _d, double _x, double _y, double _v)
-    : s(_s), d(_d), x(_x), y(_y), v(_v) {}
-};
-
-bool willCollideDuringLaneChange(carData ego,
-				 carData* carBehind,
-				 carData* carFront,
-				 std::function<std::vector<double>(double, double)>& xy) {
-  
-}
-
-double cost() {
-}
-
-
-// target d, target v
-std::pair<std::vector<double>, std::vector<double>> choseLane(
-    const carData& ego, const std::vector<carData>& cars,
-    std::function<std::vector<double>(double, double)>& xy) {
-  
-}
 
 std::vector<double> path(double a0, double v0, double v1, double delta_d);
 // assuming the car is oriented along the spline and wants to achieve a velocity
@@ -148,16 +125,43 @@ std::pair<std::vector<double>, std::vector<double>> smoothPath(
   std::tie(spline,xref,yref,theta,spline_x_max) = getSpline(x,y,yaw,sf,df,xy);
   double totalDist = length(spline,0,spline_x_max);
   std::vector<double> x1s,y1s;
-  std::tie(x1s,y1s) = jerkFreePoints(spline,a0,v0,v1,totalDist);
+  std::tie(x1s,y1s) = jerkFreePoints(spline,a0,v0,vf,totalDist);
   return fromRefFrame(x1s,y1s,theta,xref,yref);
 }
 
-std::pair<std::vector<double>, std::vector<double>> path_plan(
-    double max_s, double car_x, double car_y, double car_s, double car_d,
+double cost(){
+
+};
+
+std::tuple<double,double,double> transformCarData(const std::vector<double>& c/*carData*/,double delta_t ) {
+  //id,x,y,vx,vy,s,d
+  double vx = c[3];
+  double vy = c[4];
+  double v = sqrt(vx*vx+vy*vy);
+  double s = c[5];
+  double d = c[6];
+  return std::make_tuple(s+v*delta_t,d,v);
+};
+//double s,double d,double sdot
+std::vector<std::tuple<double,double,double>> transformCarsData(std::vector<std::vector<double>>& cars_data,double delta_t) {
+  std::vector<std::tuple<double,double,double>> ret;
+  std::transform(cars_data.begin(),cars_data.end(),ret.begin(),[delta_t](const std::vector<double>& c) {return transformCarData(c,delta_t);});
+  return ret;
+};
+
+std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x, double car_y, double car_s, double car_d,
     double car_yaw, double car_speed, std::vector<double>& prev_x,
     std::vector<double>& prev_y, double end_path_s, double end_path_d,
     std::vector<std::vector<double>> cars_data,
-    std::function<std::vector<double>(double, double)> xy) {
+    std::function<std::vector<std::tuple<double,double>>(std::vector<double>, std::vector<double>)> xy, std::function<std::vector<double>(double,double,double)> sd) {
   std::pair<std::vector<double>, std::vector<double>> ret;
+  unsigned long np = prev_x.size();
+  assert(prev_x.size()==prev_y.size());
+  double ego_x(np ? prev_x.back() : car_x),ego_y(np ? prev_y.back() : car_y);
+  double ego_s(np ? end_path_s : car_s),ego_d(np ? end_path_d : car_d);
+  double ego_yaw(np >1 ? yaw(prev_x[np-2],prev_y[np-2],prev_x[np-1],prev_y[np-1]):car_yaw);
+  const std::vector<std::tuple<double, double, double>>& transformedCarsData =
+      transformCarsData(cars_data, np*dt);
+
   return ret;
 }

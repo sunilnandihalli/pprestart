@@ -182,7 +182,6 @@ std::tuple<std::function<double(double)>,double> achieveZeroAcelAndVel(double a0
   }
 }
 
-std::vector<double> path(double a0,double v0,double vmin,double vmax,double delta_d);
 std::vector<double> path(double a0,double v0,double v1,double delta_d) {
   double totalTimeEstimate = delta_d/((v0+v1)*0.5);
   std::function<double(double)> jfn;
@@ -193,7 +192,8 @@ std::vector<double> path(double a0,double v0,double v1,double delta_d) {
   } while(fabs(timeTaken-totalTimeEstimate)*v1 > max_speed*dt);
 
   double ap(a0),vp(v0),sp(0);
-  for(double t = dt; t<=total_t;t+=dt) {
+  std::vector<double> ret;
+  for(double t = dt; t<=totalTimeEstimate;t+=dt) {
     double ac,vc,sc,jc;
     jc = jfn(t);
     ac = ap+jc*dt;
@@ -206,7 +206,6 @@ std::vector<double> path(double a0,double v0,double v1,double delta_d) {
   }
   return ret;
 }
-
 
 void path(double a0,double v0,double vmin,double vmax,double delta_d,const char* fname) {
   auto jfn_t = achieveZeroAcelAndVel(a0,v0,vmin,vmax,delta_d);
