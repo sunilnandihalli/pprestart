@@ -193,6 +193,8 @@ std::vector<std::tuple<double, double>> getXY(std::vector<double> s,
   wp2 = std::lower_bound(maps_s.begin(),
                          maps_s.end(),
                          s[id[0]]) - maps_s.begin();
+  if(wp2==maps_s.size())
+    wp2 = 0;
   wp1 = wp2 > 0 ? wp2 - 1 : maps_s.size() - 1;
 
   double
@@ -271,7 +273,13 @@ void testGetXY(const vector<double>& ms,const vector<double>& mx,const vector<do
            <<" 99th : "<<errorStats[99*(num_tests/100)]
            <<" 100th : "<<errorStats[num_tests-1]<<std::endl;
 }
-
+double lane_yaw(double s,std::vector<double>& ms,std::vector<double>& mx,std::vector<double>& my){
+  int wp2 = std::lower_bound(ms.begin(),ms.end(),s)-ms.begin();
+  if(wp2==ms.size())
+    wp2 = 0;
+  int wp1 = wp2>0?wp2-1:ms.size()-1;
+  return atan2(my[wp2]-my[wp1],mx[wp2]-mx[wp1]);
+}
 
 std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
                                                               double car_y,
@@ -279,6 +287,7 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
                                                               double car_d,
                                                               double car_yaw,
                                                               double car_speed,
+                                                              double lane_yaw,
                                                               std::vector<double>& prev_x,
                                                               std::vector<double>& prev_y,
                                                               double end_path_s,
@@ -410,6 +419,7 @@ int main() {
                                                          car_d,
                                                          car_yaw,
                                                          car_speed,
+                                                         lane_yaw(end_path_s,map_waypoints_s,map_waypoints_x,map_waypoints_y),
                                                          prev_x,
                                                          prev_y,
                                                          end_path_s,

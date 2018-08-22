@@ -2,6 +2,9 @@
 #include <functional>
 #include <utility>
 #include <vector>
+#include <deque>
+#include <map>
+#include <iostream>
 #include "spline.h"
 #include "constants.h"
 
@@ -66,7 +69,7 @@ double length(tk::spline& s, double x0, double x1) {
           return lf;
         else
           return f(x0, y0, x, y, lf1, tol * 0.5) +
-                 f(x, y, x1, y1, lf2, tol * 0.5);
+              f(x, y, x1, y1, lf2, tol * 0.5);
       };
   double y0(s(x0)), y1(s(x1));
   double dx(x1 - x0), dy(y1 - y0);
@@ -77,16 +80,24 @@ double length(tk::spline& s, double x0, double x1) {
 double yaw(double x1, double y1, double x2, double y2) {
   std::atan2(y2 - y1, x2 - x1);
 }
-
-std::vector<double> path(double a0, double v0, double v1, double delta_d);
+//path points,final acceleration,final velocity
+std::tuple<std::vector<double>, std::vector<double>, std::vector<double>>
+path(double a0, double v0, double v1, double delta_d);
 // assuming the car is oriented along the spline and wants to achieve a velocity
 // of v1 and zero acceleration covering a distance of d in time t
-std::pair<std::vector<double>, std::vector<double>> jerkFreePoints(
-    tk::spline& s, double v0, double a0, double v1, double d) {
+// pts-x,pts-y,accs,vels
+std::tuple<std::vector<double>,
+           std::vector<double>,
+           std::vector<double>,
+           std::vector<double>>
+jerkFreePoints(
+    tk::spline& s, double a0, double v0, double v1, double d) {
   std::vector<double> xs, ys;
   double x0(0), y0(s(x0));
   double s0 = 0;
-  auto s_vals = path(a0, v0, v1, d);
+  std::vector<double> s_vals;
+  std::vector<double> v_vals, a_vals;
+  std::tie(s_vals, a_vals, v_vals) = path(a0, v0, v1, d);
   for (int i = 0; i < s_vals.size(); i++) {
     double ds = (s_vals[i] - s0);
     double x1p = x0 + ds;
@@ -102,66 +113,312 @@ std::pair<std::vector<double>, std::vector<double>> jerkFreePoints(
     x0 = x1;
     y0 = y1;
   }
-  return std::make_pair(xs, ys);
+  return std::make_tuple(xs, ys, a_vals, v_vals);
 }
 // spline,refx,refy,theta,lastx in reference coordinates
-std::tuple<tk::spline,double,double,double,double> getSpline(double x,double y, double yaw, double sf, double df,std::function<std::vector<double>(double,double)> xy) {
+std::tuple<tk::spline, double, double, double, double> getSpline(double x,
+                                                                 double y,
+                                                                 double yaw,
+                                                                 double sf,
+                                                                 double df,
+                                                                 std::function<
+                                                                     std::vector<
+                                                                         std::tuple<
+                                                                             double,
+                                                                             double>>(
+                                                                         std::vector<
+                                                                             double>,
+                                                                         std::vector<
+                                                                             double>)> xy) {
   double theta = yaw; // transform angle
-  double r = 1.0;
-  auto p_last = xy(sf,df);
-  auto p_penultimate = xy(sf-r,df);
-  std::vector<double> xs({x,x+r*cos(yaw),p_penultimate[0],p_last[0]}),ys({y,y+r*sin(yaw),p_penultimate[1],p_last[1]}),x1s,y1s;
-  std::tie(x1s,y1s) = toRefFrame(xs,ys,theta,x,y);
+  double r = 0.5;
+  auto pts = xy({sf, sf - 6*r}, {df, df});
+  double xl, yl, xl_1, yl_1;
+  std::tie(xl, yl) = pts[0];
+  std::tie(xl_1, yl_1) = pts[1];
+  std::vector<double> xs({x, x + r * cos(yaw), xl_1, xl}),
+      ys({y, y + r * sin(yaw), yl_1, yl}), x1s, y1s;
+  std::tie(x1s, y1s) = toRefFrame(xs, ys, theta, x, y);
   tk::spline spline;
-  spline.set_points(x1s,y1s);
-  return std::make_tuple(spline,x,y,theta,x1s.back());  
+  spline.set_points(x1s, y1s);
+  return std::make_tuple(spline, x, y, theta, x1s.back());
+}
+// xpts,ypts,accs,vels
+std::tuple<std::vector<double>,
+           std::vector<double>,
+           std::vector<double>,
+           std::vector<double>> smoothPath(
+    double x,
+    double y,
+    double yaw,
+    double a0,
+    double v0,
+    double vf,
+    double sf,
+    double df,
+    std::function<std::vector<std::tuple<double, double>>(std::vector<double>,
+                                                          std::vector<double>)> xy) {
+  tk::spline spline;
+  double xref, yref, theta, spline_x_max;
+  std::tie(spline, xref, yref, theta, spline_x_max) =
+      getSpline(x, y, yaw, sf, df, xy);
+  double totalDist = length(spline, 0, spline_x_max);
+  std::vector<double> x1s, y1s;
+  std::vector<double> a_vals, v_vals;
+  std::tie(x1s, y1s, a_vals, v_vals) =
+      jerkFreePoints(spline, a0, v0, vf, totalDist);
+  std::vector<double> xs, ys;
+  std::tie(xs, ys) = fromRefFrame(x1s, y1s, theta, xref, yref);
+  return std::make_tuple(xs, ys, a_vals, v_vals);
 }
 
-std::pair<std::vector<double>, std::vector<double>> smoothPath(
-							       double x, double y, double yaw, double a0, double v0, double vf,double sf, double df,
-    std::function<std::vector<double>(double, double)> xy) {
-  tk::spline spline;
-  double xref,yref,theta,spline_x_max;
-  std::tie(spline,xref,yref,theta,spline_x_max) = getSpline(x,y,yaw,sf,df,xy);
-  double totalDist = length(spline,0,spline_x_max);
-  std::vector<double> x1s,y1s;
-  std::tie(x1s,y1s) = jerkFreePoints(spline,a0,v0,vf,totalDist);
-  return fromRefFrame(x1s,y1s,theta,xref,yref);
-}
-
-double cost(){
-
+struct car {
+  double s, d, v;
+  car(double _s, double _d, double _v) : s(_s), d(_d), v(_v) {}
 };
 
-std::tuple<double,double,double> transformCarData(const std::vector<double>& c/*carData*/,double delta_t ) {
+// s , d , v
+car transformCarData(const std::vector<double>& c/*carData*/, double delta_t) {
   //id,x,y,vx,vy,s,d
   double vx = c[3];
   double vy = c[4];
-  double v = sqrt(vx*vx+vy*vy);
+  double v = sqrt(vx * vx + vy * vy);
   double s = c[5];
   double d = c[6];
-  return std::make_tuple(s+v*delta_t,d,v);
+  return car(s + v * delta_t, d, v);
 };
+
+
 //double s,double d,double sdot
-std::vector<std::tuple<double,double,double>> transformCarsData(std::vector<std::vector<double>>& cars_data,double delta_t) {
-  std::vector<std::tuple<double,double,double>> ret;
-  std::transform(cars_data.begin(),cars_data.end(),ret.begin(),[delta_t](const std::vector<double>& c) {return transformCarData(c,delta_t);});
+std::vector<car>
+transformCarsData(std::vector<std::vector<double>>& cars_data, double delta_t) {
+  std::vector<car> ret;
+  for(std::vector<double>& cdata:cars_data) {
+    ret.push_back(transformCarData(cdata,delta_t));
+    if(ret.back().d<0 || ret.back().d>12)
+      ret.pop_back();
+  }
   return ret;
 };
 
-std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x, double car_y, double car_s, double car_d,
-    double car_yaw, double car_speed, std::vector<double>& prev_x,
-    std::vector<double>& prev_y, double end_path_s, double end_path_d,
-    std::vector<std::vector<double>> cars_data,
-    std::function<std::vector<std::tuple<double,double>>(std::vector<double>, std::vector<double>)> xy, std::function<std::vector<double>(double,double,double)> sd) {
-  std::pair<std::vector<double>, std::vector<double>> ret;
-  unsigned long np = prev_x.size();
-  assert(prev_x.size()==prev_y.size());
-  double ego_x(np ? prev_x.back() : car_x),ego_y(np ? prev_y.back() : car_y);
-  double ego_s(np ? end_path_s : car_s),ego_d(np ? end_path_d : car_d);
-  double ego_yaw(np >1 ? yaw(prev_x[np-2],prev_y[np-2],prev_x[np-1],prev_y[np-1]):car_yaw);
-  const std::vector<std::tuple<double, double, double>>& transformedCarsData =
-      transformCarsData(cars_data, np*dt);
+struct lane_car_data {
+  std::vector<int> lane_choices;
+  std::vector<car*> front;
+  std::vector<car*> back;
+  lane_car_data(std::vector<int> _lane_choices,
+                std::vector<car*> _front,
+                std::vector<car*> _back)
+      : lane_choices(_lane_choices), front(_front), back(_back) {}
+};
 
+double dist(double from, double to) {
+  if (to >= from) {
+    double d1 = to - from;
+    double d2 = max_s - (to - from);
+    if (d1 < d2)
+      return d1;
+    else
+      return -d2;
+  } else
+    return -dist(to, from);
+}
+int lane_id(double d) {
+  double lane_id;
+  modf(d / lane_width, &lane_id);
+  return int(lane_id);
+};
+
+lane_car_data possibleLanes(car ego, std::vector<car>& cardata) {
+  int ego_lane_id = lane_id(ego.d);
+  lane_car_data
+      lc({}, {nullptr, nullptr, nullptr}, {nullptr, nullptr, nullptr});
+  for (car& c:cardata) {
+    int lid = lane_id(c.d);
+    double ego_dist = dist(ego.s, c.s);
+    if (ego_dist > 0 && (lc.front[lid] == nullptr
+        || dist(ego.s, lc.front[lid]->s) > ego_dist))
+      lc.front[lid] = &c;
+    if (ego_dist < 0
+        && (lc.back[lid] == nullptr || dist(ego.s, lc.back[lid]->s) < ego_dist))
+      lc.back[lid] = &c;
+  }
+  for (int lid = std::max(0, ego_lane_id - 1);
+       lid <= std::min(2, ego_lane_id + 1); lid++) {
+    car* f(lc.front[lid]), * b(lc.back[lid]);
+    if (lid == ego_lane_id ||
+        ((f == nullptr || dist(ego.s, f->s) > lane_width) &&
+            (b == nullptr
+                || dist(b->s, ego.s) > (lane_width + (b->v - ego.v) * 3))))
+      lc.lane_choices.push_back(lid);
+  }
+  return lc;
+}
+
+struct lane_change_path {
+  std::vector<double> x;
+  std::vector<double> y;
+  std::vector<double> a;
+  std::vector<double> v;
+  double sf, lane_id;
+};
+
+lane_change_path get_path(int tlid/*target_lane_id*/,
+                          int elid/*ego_lane_id*/,
+                          lane_car_data& lc,
+                          double a0,
+                          double v0,
+                          double x0,
+                          double y0,
+                          double yaw0,
+                          double s0,
+                          double d0,
+                          double lane_yaw,
+                          std::function<std::vector<std::tuple<double, double>>(
+                              std::vector<double>,
+                              std::vector<double>)> xy) {
+  car* b(lc.back[tlid]), * f(lc.front[tlid]);
+  lane_change_path ret;
+  double target_d = (tlid + 0.5) * lane_width;
+  double target_v, target_s;
+  ret.lane_id = tlid;
+  if (f) {
+    double lctime = 3.0;
+    do {
+      target_v = f->v;
+      target_s = f->s + f->v * lctime - lane_width;
+      std::tie(ret.x, ret.y, ret.a, ret.v) =
+          smoothPath(x0, y0, yaw0, a0, v0, target_v, target_s, target_d, xy);
+      ret.sf = target_s;
+      if (lctime > ret.x.size() * dt)
+        lctime = (ret.x.size() * dt + lctime) * 0.5;
+      else
+        break;
+    } while (true);
+  } else {
+    target_v = max_speed;
+    target_s = s0 + target_v * 3;
+    std::tie(ret.x, ret.y, ret.a, ret.v) =
+        smoothPath(x0, y0, yaw0, a0, v0, target_v, target_s, target_d, xy);
+    ret.sf = target_s;
+  }
   return ret;
+}
+
+
+std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
+                                                              double car_y,
+                                                              double car_s,
+                                                              double car_d,
+                                                              double car_yaw,
+                                                              double car_speed,
+                                                              double lane_yaw,
+                                                              std::vector<double>& prev_x,
+                                                              std::vector<double>& prev_y,
+                                                              double end_path_s,
+                                                              double end_path_d,
+                                                              std::vector<std::vector<
+                                                                  double>> cars_data,
+                                                              std::function<std::vector<
+                                                                  std::tuple<
+                                                                      double,
+                                                                      double>>(
+                                                                  std::vector<
+                                                                      double>,
+                                                                  std::vector<
+                                                                      double>)> xy,
+                                                              std::function<std::vector<
+                                                                  double>(double,
+                                                                          double,
+                                                                          double)> sd) {
+  std::vector<double> xs,ys;
+  unsigned long np = prev_x.size();
+  assert(prev_x.size() == prev_y.size());
+  double ego_x(np ? prev_x.back() : car_x), ego_y(np ? prev_y.back() : car_y);
+  double ego_s(np ? end_path_s : car_s), ego_d(np ? end_path_d : car_d);
+  double ego_yaw(np > 1 ? yaw(prev_x[np - 2],
+                              prev_y[np - 2],
+                              prev_x[np - 1],
+                              prev_y[np - 1]) : car_yaw);
+  int ego_lane_id = lane_id(ego_d);
+  static double ego_v,ego_a;
+  static bool first_call(true);
+  static int target_lane_id;
+  if (first_call) {
+    ego_v = car_speed;
+    ego_a = 0.0;
+    target_lane_id = ego_lane_id;
+  }
+  double target_d = (target_lane_id + 0.5) * lane_width;
+  bool disable_lane_change_choice = fabs(ego_d - target_d) > 0.5;
+  std::vector<car> transformedCarsData =
+      transformCarsData(cars_data, np * dt);
+  lane_car_data
+      lcdata = possibleLanes(car(ego_s, ego_d, ego_v), transformedCarsData);
+  lane_change_path change_path;
+  if (disable_lane_change_choice) {
+    change_path = get_path(target_lane_id,
+                                            ego_lane_id,
+                                            lcdata,
+                                            ego_a,
+                                            ego_v,
+                                            ego_x,
+                                            ego_y,
+                                            ego_yaw,
+                                            ego_s,
+                                            ego_d,
+                                            lane_yaw,
+                                            xy);
+  } else {
+    std::map<int,lane_change_path> options;
+    int max_points = 0;
+
+    for (int lid:lcdata.lane_choices) {
+       options[lid] = get_path(lid,
+                                              ego_lane_id,
+                                              lcdata,
+                                              ego_a,
+                                              ego_v,
+                                              ego_x,
+                                              ego_y,
+                                              ego_yaw,
+                                              ego_s,
+                                              ego_d,
+                                              lane_yaw, xy);
+       if(options[lid].x.size()> max_points)
+         max_points = options[lid].x.size();
+    }
+    std::function<double(int)> option_dist = [&options,ego_s,max_points](int lid) {
+      const lane_change_path& lc = options[lid];
+      return dist(ego_s, loop(lc.sf + lc.v.back()* (max_points - lc.x.size()) * dt));
+    };
+    int best_lid = ego_lane_id;
+    double best_dist = option_dist(ego_lane_id);
+
+    for(auto lid_lc : options) {
+      if(lid_lc.first == ego_lane_id)
+        continue;
+      double cur_dist = option_dist(lid_lc.first);
+      if(cur_dist>best_dist) {
+        best_lid = lid_lc.first;
+        best_dist = cur_dist;
+      }
+    }
+    std::cout<<"best_lane_id : "<<best_lid<<" best_dist : "<<best_dist<<" options : "<<options.size()<<std::endl;
+    if(options.count(best_lid)!=1) {
+      throw("best_lane_id not found");
+    } else {
+      change_path = options[best_lid];
+    }
+  }
+
+  xs = prev_x;
+  ys = prev_y;
+  for(int i=prev_x.size(),j=0;i<num_waypoints;i++,j++) {
+    xs.push_back(change_path.x[j]);
+    ys.push_back(change_path.y[j]);
+    ego_a = change_path.a[j];
+    ego_v = change_path.v[j];
+  }
+  first_call = false;
+  return std::make_pair(xs,ys);
 }
