@@ -282,10 +282,17 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       {
 	double vspln = std::max(v0,10.0);
 	if(elid==tlid) {
+	  spline_s_vals.push_back(s0+vspln*0.25*lctime);
+	  spline_d_vals.push_back(target_d);
 	  spline_s_vals.push_back(s0+vspln*0.5*lctime);
 	  spline_d_vals.push_back(target_d);
+	  spline_s_vals.push_back(s0+vspln*0.75*lctime);
+	  spline_d_vals.push_back(target_d);
 	}
+	
 	spline_s_vals.push_back(s0+vspln*lctime);
+	spline_d_vals.push_back(target_d);
+	spline_s_vals.push_back(s0+vspln*1.25*lctime);
 	spline_d_vals.push_back(target_d);
 	spline_s_vals.push_back(s0+vspln*1.5*lctime);
 	spline_d_vals.push_back(target_d);
@@ -298,7 +305,7 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       std::function<double(double)> jfn;
       double total_time,total_dist,final_v,lane_change_time(0.0);
       if(tlid!=elid) {
-	double lane_change_dist = length(spln,0,*(spline_xs.end()-2));
+	double lane_change_dist = length(spln,0,*(spline_xs.end()-3));
 	double changed_lane_time;
 	double changed_lane_dist;
 	std::function<double(double)> jfn1,jfn2;
@@ -306,7 +313,7 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
 	double target_v;
 	std::tie(jfn1,lane_change_time,goalAchieved) = achieveTargetVelocityAndDistanceInShortestTime
 	  (a0,v0,v0,std::max(0.0,v0+a0*fabs(a0/(2*jmax))-0.1),std::min(max_speed,v0+a0*fabs(a0/(2*jmax))+0.1),lane_change_dist);
-	double lane_changed_s = *(spline_s_vals.end()-2);
+	double lane_changed_s = *(spline_s_vals.end()-3);
 	// should not collide with the vehicle in the back in the next lane
 	if(b==nullptr || sdist(b->s,lane_changed_s)>safe_dist+(lane_change_time*b->v)) {
 	  if(f==nullptr || (sdist(lane_changed_s,f->s)>safe_dist+lane_change_time*f->v+150.0)) {
