@@ -272,6 +272,9 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
     for(int tlid : {elid-1,elid,elid+1}) {
       if(tlid<0||tlid>2)
 	continue;
+      if(v0<5.0 && tlid!=elid) // caution when removing this condition. 
+	continue;
+
       double target_d = (tlid + 0.5) * lane_width;
       car* b(lc.back[tlid]), * f(lc.front[tlid]);
       std::vector<double> spline_s_vals;
@@ -295,15 +298,15 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       std::function<double(double)> jfn;
       double total_time,total_dist,final_v,lane_change_time(0.0);
       if(tlid!=elid) {
-	double lane_changed_s = *(spline_xs.end()-2);
-	double lane_change_dist = length(spln,0,lane_changed_s);
+	double lane_change_dist = length(spln,0,*(spline_xs.end()-2));
 	double changed_lane_time;
 	double changed_lane_dist;
 	std::function<double(double)> jfn1,jfn2;
 	bool goalAchieved;
 	double target_v;
 	std::tie(jfn1,lane_change_time,goalAchieved) = achieveTargetVelocityAndDistanceInShortestTime
-	  (a0,v0,v0,std::max(0.0,v0+a0*fabs(a0/(2*jmax))),std::min(max_speed,v0+a0*fabs(a0/(2*jmax))),lane_change_dist);
+	  (a0,v0,v0,std::max(0.0,v0+a0*fabs(a0/(2*jmax))-0.1),std::min(max_speed,v0+a0*fabs(a0/(2*jmax))+0.1),lane_change_dist);
+	double lane_changed_s = *(spline_s_vals.end()-2);
 	// should not collide with the vehicle in the back in the next lane
 	if(b==nullptr || sdist(b->s,lane_changed_s)>safe_dist+(lane_change_time*b->v)) {
 	  if(f==nullptr || (sdist(lane_changed_s,f->s)>safe_dist+lane_change_time*f->v+150.0)) {
@@ -330,9 +333,11 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
 	double delta_d = sdist(s0,f->s)-safe_dist;
 	bool goalAchieved;
 	std::tie(jfn,total_time,goalAchieved) = achieveTargetVelocityAndDistanceInShortestTime(a0,v0-f->v,0,-f->v,max_speed-f->v,delta_d);
+	final_v = f->v;
 	total_dist = delta_d+total_time*f->v;
 	} else {
 	  std::tie(total_dist,jfn,total_time) = distDuringVelocityChange(a0,v0,max_speed);
+	  final_v = max_speed;
 	}
       }
       if(total_time>max_time)
@@ -355,7 +360,7 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       std::function<double(double)> jfn;
       double total_time,total_distance,lane_change_time;
       double refx,refy,theta;
-      std::tie(s,refx,refy,theta,jfn,total_time,total_distance,lane_change_time,std::ignore,ret.lane_id) = best_option;
+      std::tie(s,refx,refy,theta,jfn,total_time,total_distance,std::ignore,lane_change_time,ret.lane_id) = best_option;
       std::vector<double> s_vals;
       std::tie(s_vals,ret.a,ret.v) = genCompletePath(jfn,a0,v0,0.0,lane_change_time>1.0?lane_change_time:1.0);
       std::vector<double> x1s,y1s;
@@ -406,6 +411,7 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
   static double ego_v, ego_a;
   static bool first_call(true);
   static int target_lane_id;
+  std::cout<<"ego_v : "<<ego_v<<" ego_a : "<<ego_a<<std::endl;
   if (first_call) {
     ego_v = car_speed;
     ego_a = 0.0;
@@ -436,6 +442,10 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
       ego_a = change_path.a[i];
       ego_v = change_path.v[i];
     }
+  }
+  if(fabs(ego_a)>amax*1.05 || fabs(ego_v)>max_speed*1.05) {
+    std::cout<<"error : ego_a : "<<ego_a<<" ego_v : "<<ego_v<<std::endl<<" num_points : "<<xs.size()<<" prev_size : "<<np<<std::endl ;
+    exit(0);
   }
   first_call = false;
   return std::make_pair(xs, ys);
