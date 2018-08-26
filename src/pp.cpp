@@ -128,8 +128,10 @@ jerkFreePoints(
 }
 
 // spline,refx,refy,theta,x of passed-in s_vals reference coordinates
-std::tuple<tk::spline, double, double, double, std::vector<double>> getSpline(double x,
+std::tuple<tk::spline, double, double, double, double, std::vector<double>> getSpline(double x,
                                                                  double y,
+									      double px,
+									      double py,
                                                                  double yaw,
                                                                  std::vector<double> sf,
                                                                  std::vector<double> df,
@@ -142,22 +144,42 @@ std::tuple<tk::spline, double, double, double, std::vector<double>> getSpline(do
                                                                              double>,
                                                                          std::vector<
                                                                              double>)> xy) {
-  double theta = yaw; // transform angle
+  double theta; // transform angle
   double r = 0.5;
   auto pts = xy(sf, df);
  
-  std::vector<double> xs({x, x + r * cos(yaw)}),
-      ys({y, y + r * sin(yaw)}), x1s, y1s;
+  std::vector<double> xs,
+      ys, x1s, y1s;
+  double refx,refy;
+  if(px!=sentinel && py!=sentinel) {
+    xs = {px,x};
+    ys = {py,y};
+    theta = atan2(y-py,x-px);
+    refx = px;
+    refy = py;
+  } else {
+    xs = {x, x + r * cos(yaw)};
+    ys = {y, y + r * sin(yaw)};
+    theta = yaw;
+    refx = x;
+    refy = y;
+  }
   for(auto pt:pts) {
     double x,y;
     std::tie(x,y) = pt;
     xs.push_back(x);
     ys.push_back(y);
   }
-  std::tie(x1s, y1s) = toRefFrame(xs, ys, theta, x, y);
+  double startx;
+  std::tie(x1s, y1s) = toRefFrame(xs, ys, theta, refx, refy);
+  if(px!=sentinel && py!=sentinel) {
+    startx = x1s[1];
+  } else {
+    startx = x1s[0];
+  }
   tk::spline spline;
   spline.set_points(x1s, y1s);
-  return std::make_tuple(spline, x, y, theta, std::vector<double>(x1s.begin()+2,x1s.end()));
+  return std::make_tuple(spline, refx, refy, theta, startx, std::vector<double>(x1s.begin()+2,x1s.end()));
 }
 
 struct car {
@@ -250,7 +272,9 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
                           double v0,
                           double x0,
                           double y0,
-                          double yaw0,
+			  double px,
+			  double py,
+			  double yaw0,
                           double s0,
                           double d0,
                           double lane_yaw,
@@ -263,11 +287,11 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
   
   double target_v, target_s;
   bool goalAchieved;
-  std::tuple<tk::spline,double,double,double,std::function<double(double)>,double,double,double,double,int> best_option;
+  std::tuple<tk::spline,double,double,double,std::function<double(double)>,double,double,double,double,int,double> best_option;
 
   							   {
-    // vector of tuple of (spline,refx,refy,theta,jfn,total_time,total_distance,final_velocity,lane_change_time,target_lane_id)
-    std::vector<std::tuple<tk::spline,double,double,double,std::function<double(double)>,double,double,double,double,int>> options;
+    // vector of tuple of (spline,refx,refy,theta,jfn,total_time,total_distance,final_velocity,lane_change_time,target_lane_id,start_spline_x)
+							     std::vector<std::tuple<tk::spline,double,double,double,std::function<double(double)>,double,double,double,double,int,double>> options;
     double max_time = 0;
     for(int tlid : {elid-1,elid,elid+1}) {
       if(tlid<0||tlid>2)
@@ -279,6 +303,7 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       car* b(lc.back[tlid]), * f(lc.front[tlid]);
       std::vector<double> spline_s_vals;
       std::vector<double> spline_d_vals;
+      int lane_change_marker = std::numeric_limits<int>::max();
       {
 	double vspln = std::max(v0,10.0);
 	if(elid==tlid) {
@@ -289,7 +314,7 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
 	  spline_s_vals.push_back(s0+vspln*0.75*lctime);
 	  spline_d_vals.push_back(target_d);
 	}
-	
+	lane_change_marker = 3;
 	spline_s_vals.push_back(s0+vspln*lctime);
 	spline_d_vals.push_back(target_d);
 	spline_s_vals.push_back(s0+vspln*1.25*lctime);
@@ -298,14 +323,14 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
 	spline_d_vals.push_back(target_d);
       }
       tk::spline spln;
-      double refx,refy,theta;
+      double refx,refy,theta,start_spline_x;
       std::vector<double> spline_xs;
-      std::tie(spln,refx,refy,theta,spline_xs) = getSpline(x0,y0,yaw0,spline_s_vals,spline_d_vals,xy);
+      std::tie(spln,refx,refy,theta,start_spline_x,spline_xs) = getSpline(x0,y0,px,py,yaw0,spline_s_vals,spline_d_vals,xy);
       std::vector<double> s_vals,a_vals,v_vals;
       std::function<double(double)> jfn;
       double total_time,total_dist,final_v,lane_change_time(0.0);
       if(tlid!=elid) {
-	double lane_change_dist = length(spln,0,*(spline_xs.end()-3));
+	double lane_change_dist = length(spln,start_spline_x,spline_xs[lane_change_marker]);
 	double changed_lane_time;
 	double changed_lane_dist;
 	std::function<double(double)> jfn1,jfn2;
@@ -313,7 +338,7 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
 	double target_v;
 	std::tie(jfn1,lane_change_time,goalAchieved) = achieveTargetVelocityAndDistanceInShortestTime
 	  (a0,v0,v0,std::max(0.0,v0+a0*fabs(a0/(2*jmax))-0.1),std::min(max_speed,v0+a0*fabs(a0/(2*jmax))+0.1),lane_change_dist);
-	double lane_changed_s = *(spline_s_vals.end()-3);
+	double lane_changed_s = spline_s_vals[lane_change_marker];
 	// should not collide with the vehicle in the back in the next lane
 	if(b==nullptr || sdist(b->s,lane_changed_s)>safe_dist+(lane_change_time*b->v)) {
 	  if(f==nullptr || (sdist(lane_changed_s,f->s)>safe_dist+lane_change_time*f->v+150.0)) {
@@ -349,12 +374,12 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       }
       if(total_time>max_time)
 	max_time = total_time;
-      options.push_back(std::make_tuple(spln,refx,refy,theta,jfn,total_time,total_dist,final_v,lane_change_time,tlid));
+      options.push_back(std::make_tuple(spln,refx,refy,theta,jfn,total_time,total_dist,final_v,lane_change_time,tlid,start_spline_x));
     }
     double max_dist_at_max_time=0;
     for(auto& option:options) {
       double t,d,v;
-      std::tie(std::ignore,std::ignore,std::ignore,std::ignore,std::ignore,t,d,v,std::ignore,std::ignore) = option;
+      std::tie(std::ignore,std::ignore,std::ignore,std::ignore,std::ignore,t,d,v,std::ignore,std::ignore,std::ignore) = option;
       double dist_at_max_time = d+(v*(max_time-t));
       if(dist_at_max_time>max_dist_at_max_time) {
 	max_dist_at_max_time = dist_at_max_time;
@@ -366,10 +391,10 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       tk::spline s;
       std::function<double(double)> jfn;
       double total_time,total_distance,lane_change_time;
-      double refx,refy,theta;
-      std::tie(s,refx,refy,theta,jfn,total_time,total_distance,std::ignore,lane_change_time,ret.lane_id) = best_option;
+      double refx,refy,theta,start_spline_x;
+      std::tie(s,refx,refy,theta,jfn,total_time,total_distance,std::ignore,lane_change_time,ret.lane_id,start_spline_x) = best_option;
       std::vector<double> s_vals;
-      std::tie(s_vals,ret.a,ret.v) = genCompletePath(jfn,a0,v0,0.0,lane_change_time>1.0?lane_change_time:1.0);
+      std::tie(s_vals,ret.a,ret.v) = genCompletePath(jfn,a0,v0,start_spline_x,lane_change_time>1.0?lane_change_time:1.0);
       std::vector<double> x1s,y1s;
       std::tie(x1s,y1s) = discretizeSpline(s,s_vals);
       std::tie(ret.x,ret.y) = fromRefFrame(x1s,y1s,theta,refx,refy);
@@ -409,6 +434,7 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
   unsigned long np = prev_x.size();
   assert(prev_x.size() == prev_y.size());
   double ego_x(np ? prev_x.back() : car_x), ego_y(np ? prev_y.back() : car_y);
+  double ego_px(np>1?prev_x[np-2]:sentinel),ego_py(np>1?prev_y[np-2]:sentinel);
   double ego_s(np ? end_path_s : car_s), ego_d(np ? end_path_d : car_d);
   double ego_yaw(np > 1 ? yaw(prev_x[np - 2],
                               prev_y[np - 2],
@@ -438,6 +464,8 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
 			   ego_v,
 			   ego_x,
 			   ego_y,
+			   ego_px,
+			   ego_py,
 			   ego_yaw,
 			   ego_s,
 			   ego_d,
@@ -452,7 +480,6 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
   }
   if(fabs(ego_a)>amax*1.05 || fabs(ego_v)>max_speed*1.05) {
     std::cout<<"error : ego_a : "<<ego_a<<" ego_v : "<<ego_v<<std::endl<<" num_points : "<<xs.size()<<" prev_size : "<<np<<std::endl ;
-    exit(0);
   }
   first_call = false;
   return std::make_pair(xs, ys);
