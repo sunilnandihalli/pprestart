@@ -5,9 +5,13 @@
 #include <deque>
 #include <map>
 #include <iostream>
+#include <iomanip>
+#include <fstream>
+#include <chrono>
 #include "spline.h"
 #include "constants.h"
 #include "jmt.h"
+#include <string>
 
 std::pair<double, double> toRefFrame(double x, double y, double theta,
                                      double x0, double y0) {
@@ -265,8 +269,7 @@ struct lane_change_path {
   int lane_id;
 };
 
-
-lane_change_path get_path(int elid/*ego_lane_id*/,
+lane_change_path get_path_h(int elid/*ego_lane_id*/,
                           lane_car_data& lc,
                           double a0,
                           double v0,
@@ -287,17 +290,22 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
   
   double target_v, target_s;
   bool goalAchieved;
-  std::tuple<tk::spline,double,double,double,std::function<double(double)>,double,double,double,double,int,double> best_option;
+  //  (spline,refx,refy,theta,jfn,total_time,total_distance,final_velocity,lane_change_time,target_lane_id,start_spline_x)
+  typedef   std::tuple<tk::spline,double,double,double,std::function<double(double)>,double,double,double,double,int,double> option_type;
+  option_type best_option;
 
-  							   {
-    // vector of tuple of (spline,refx,refy,theta,jfn,total_time,total_distance,final_velocity,lane_change_time,target_lane_id,start_spline_x)
-							     std::vector<std::tuple<tk::spline,double,double,double,std::function<double(double)>,double,double,double,double,int,double>> options;
+  {
+    // vector of tuple of option_type
+    std::vector<option_type> options;
+    std::map<int,std::string> rejection_reason;
     double max_time = 0;
     for(int tlid : {elid-1,elid,elid+1}) {
       if(tlid<0||tlid>2)
 	continue;
-      if(v0<5.0 && tlid!=elid) // caution when removing this condition. 
+      if(v0<5.0 && tlid!=elid) { // caution when removing this condition. 
+	rejection_reason[tlid]="too slow to change lane";
 	continue;
+      }
 
       double target_d = (tlid + 0.5) * lane_width;
       car* b(lc.back[tlid]), * f(lc.front[tlid]);
@@ -307,14 +315,15 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       {
 	double vspln = std::max(v0,10.0);
 	if(elid==tlid) {
-	  spline_s_vals.push_back(s0+vspln*0.25*lctime);
-	  spline_d_vals.push_back(target_d);
+	  //spline_s_vals.push_back(s0+vspln*0.25*lctime);
+	  //spline_d_vals.push_back(target_d);
 	  spline_s_vals.push_back(s0+vspln*0.5*lctime);
 	  spline_d_vals.push_back(target_d);
 	  spline_s_vals.push_back(s0+vspln*0.75*lctime);
 	  spline_d_vals.push_back(target_d);
 	}
-	lane_change_marker = 3;
+	lane_change_marker = spline_s_vals.size();;
+
 	spline_s_vals.push_back(s0+vspln*lctime);
 	spline_d_vals.push_back(target_d);
 	spline_s_vals.push_back(s0+vspln*1.25*lctime);
@@ -344,14 +353,20 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
 	  if(f==nullptr || (sdist(lane_changed_s,f->s)>safe_dist+lane_change_time*f->v+150.0)) {
 	    target_v = max_speed;
 	    std::tie(changed_lane_dist,jfn2,changed_lane_time) = distDuringVelocityChange(0,v0,target_v);
-	  } else {
+	  } else if (sdist(s0,f->s)>safe_dist) {
 	    double delta_d = sdist(lane_changed_s,f->s+lane_change_time*f->v)-safe_dist;
 	    target_v = f->v;
 	    std::tie(jfn2,changed_lane_time,goalAchieved) = achieveTargetVelocityAndDistanceInShortestTime
 	      (0,v0-target_v,0,-target_v,max_speed-target_v,delta_d);
 	    changed_lane_dist = delta_d+target_v*changed_lane_time;
+	  } else {
+	    rejection_reason[tlid] = "car in the front is too close";
+	    continue;
 	  }
-	} else continue;
+	} else {
+	  rejection_reason[tlid]="car behind may hit you";
+	  continue;
+	}
 	total_time = lane_change_time+changed_lane_time;
 	total_dist = sdist(s0,lane_changed_s)+changed_lane_dist;
 	jfn = [jfn1,jfn2,lane_change_time,total_time](double t) {
@@ -362,11 +377,11 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
 	final_v = target_v;
       } else {
 	if(f) {
-	double delta_d = sdist(s0,f->s)-safe_dist;
-	bool goalAchieved;
-	std::tie(jfn,total_time,goalAchieved) = achieveTargetVelocityAndDistanceInShortestTime(a0,v0-f->v,0,-f->v,max_speed-f->v,delta_d);
-	final_v = f->v;
-	total_dist = delta_d+total_time*f->v;
+	  double delta_d = sdist(s0,f->s)-safe_dist;
+	  bool goalAchieved;
+	  std::tie(jfn,total_time,goalAchieved) = achieveTargetVelocityAndDistanceInShortestTime(a0,v0-f->v,0,-f->v,max_speed-f->v,delta_d);
+	  final_v = f->v;
+	  total_dist = delta_d+total_time*f->v;
 	} else {
 	  std::tie(total_dist,jfn,total_time) = distDuringVelocityChange(a0,v0,max_speed);
 	  final_v = max_speed;
@@ -377,16 +392,43 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       options.push_back(std::make_tuple(spln,refx,refy,theta,jfn,total_time,total_dist,final_v,lane_change_time,tlid,start_spline_x));
     }
     double max_dist_at_max_time=0;
-    for(auto& option:options) {
+    for(option_type& option:options) {
       double t,d,v;
       std::tie(std::ignore,std::ignore,std::ignore,std::ignore,std::ignore,t,d,v,std::ignore,std::ignore,std::ignore) = option;
-      double dist_at_max_time = d+(v*(max_time-t));
+      double dist_at_max_time = d+(v*(max_time-t))+(std::get<9>(option)==elid?2*max_time:0.0);
       if(dist_at_max_time>max_dist_at_max_time) {
 	max_dist_at_max_time = dist_at_max_time;
 	best_option = option;
       }
     }
-
+    {
+      std::cout<<"num options : "<<options.size()<<std::endl;
+      std::map<int,option_type*> option_map;
+      for(option_type& x:options) {
+	option_map[std::get<9>(x)] = &x;
+      }
+      for(int i=0;i<3;i++) {
+	auto f(lc.front[i]),b(lc.back[i]);
+	std::cout<<"   "<<i;
+	std::cout<<" b : ";
+	if(b) {
+	  std::cout<<"("<<std::setw(4)<<int(sdist(s0,b->s))<<","<<std::setw(4)<<int(b->v)<<")  ";
+	} else {
+	  std::cout<<"(    ,    )  ";
+	}
+	std::cout<<" f : ";
+	if(f) {
+	  std::cout<<"("<<std::setw(4)<<int(sdist(s0,f->s))<<","<<std::setw(4)<<int(f->v)<<")  ";
+	} else {
+	  std::cout<<"(    ,    )  ";
+	}
+	std::cout<<(option_map[i]?"yes":" no")<<"  "<<rejection_reason[i]<<" ";
+	if(elid==i)
+	  std::cout<<"ego";
+	std::cout<<std::endl;
+      }
+      std::cout<<std::flush;
+    }
     {
       tk::spline s;
       std::function<double(double)> jfn;
@@ -394,14 +436,45 @@ lane_change_path get_path(int elid/*ego_lane_id*/,
       double refx,refy,theta,start_spline_x;
       std::tie(s,refx,refy,theta,jfn,total_time,total_distance,std::ignore,lane_change_time,ret.lane_id,start_spline_x) = best_option;
       std::vector<double> s_vals;
-      std::tie(s_vals,ret.a,ret.v) = genCompletePath(jfn,a0,v0,start_spline_x,lane_change_time>1.0?lane_change_time:1.0);
+      std::tie(s_vals,ret.a,ret.v) = genCompletePath(jfn,a0,v0,start_spline_x,std::max(lane_change_time,1.1));
       std::vector<double> x1s,y1s;
       std::tie(x1s,y1s) = discretizeSpline(s,s_vals);
       std::tie(ret.x,ret.y) = fromRefFrame(x1s,y1s,theta,refx,refy);
     }
   }
-
   return ret;
+}
+lane_change_path get_path(int elid/*ego_lane_id*/,
+                          lane_car_data& lc,
+                          double a0,
+                          double v0,
+                          double x0,
+                          double y0,
+			  double px,
+			  double py,
+			  double yaw0,
+                          double s0,
+                          double d0,
+                          double lane_yaw,
+                          std::function<std::vector<std::tuple<double, double>>(
+                              std::vector<double>,
+                              std::vector<double>)> xy) {
+  static int call_id = 0;
+  static bool first = true;
+  static char fname[100];
+  if(first) {
+    std::sprintf(fname,"get_path_calls_and_responses_%d.csv",std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count() );
+    first = false;
+  }
+  static std::ofstream fout(fname);
+  lane_change_path lcp = get_path_h(elid,lc,a0,v0,x0,y0,px,py,yaw0,s0,d0,lane_yaw,xy);
+  return lcp;
+}
+
+void update(double& s,double v) {
+  if(s!=sentinel) {
+    s+=v*dt;
+  }
 }
 
 
@@ -430,6 +503,14 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
                                                                   double>(double,
                                                                           double,
                                                                           double)> sd) {
+  static int call_id(0);
+  static int point_id(0);
+  static double ego_v, ego_a;
+  static bool first_call(true);
+  static int target_lane_id;
+  static std::ofstream fout("rundata.csv");
+  const char* header = "id,callid,end_path_s,end_path_d,x,y,v,a,np,f0s,f0v,b0s,b0v,f1s,f1v,b1s,b1v,f2s,f2v,b2s,b2v,target_lane_id";
+  call_id++;
   std::vector<double> xs, ys;
   unsigned long np = prev_x.size();
   assert(prev_x.size() == prev_y.size());
@@ -441,14 +522,12 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
                               prev_x[np - 1],
                               prev_y[np - 1]) : car_yaw);
   int ego_lane_id = lane_id(ego_d);
-  static double ego_v, ego_a;
-  static bool first_call(true);
-  static int target_lane_id;
   std::cout<<"ego_v : "<<ego_v<<" ego_a : "<<ego_a<<std::endl;
   if (first_call) {
     ego_v = car_speed;
     ego_a = 0.0;
     target_lane_id = ego_lane_id;
+    fout<<header<<std::endl;
   }
   xs = prev_x;
   ys = prev_y;
@@ -471,12 +550,32 @@ std::pair<std::vector<double>, std::vector<double>> path_plan(double car_x,
 			   ego_d,
 			   lane_yaw,
 			   xy);
+    auto f0(lcdata.front[0]),f1(lcdata.front[1]),f2(lcdata.front[2]);
+    auto b0(lcdata.back[0]),b1(lcdata.back[1]),b2(lcdata.back[2]);
+    double f0s(f0?f0->s:sentinel),f0v(f0?f0->v:sentinel),b0s(b0?b0->s:sentinel),b0v(b0?b0->v:sentinel),
+      f1s(f1?f1->s:sentinel),f1v(f1?f1->v:sentinel),b1s(b1?b1->s:sentinel),b1v(b1?b1->v:sentinel),
+      f2s(f2?f2->s:sentinel),f2v(f2?f2->v:sentinel),b2s(b2?b2->s:sentinel),b2v(b2?b2->v:sentinel);
     for (int i = 0;i<change_path.x.size(); i++) {
       xs.push_back(change_path.x[i]);
       ys.push_back(change_path.y[i]);
       ego_a = change_path.a[i];
       ego_v = change_path.v[i];
+      point_id++;
+      fout<<point_id<<","<<call_id<<","<<end_path_s<<","<<end_path_d<<","<<xs.back()<<","<<ys.back()<<","<<ego_v<<","<<ego_a<<","<<np;
+      update(f0s,f0v);
+      update(b0s,b0v);
+      update(f1s,f1v);
+      update(b1s,b1v);
+      update(f2s,f2v);
+      update(b2s,b2v);
+      for(double x : {f0s,f0v,b0s,b0v,f1s,f1v,b1s,b1v,f2s,f2v,b2s,b2v}) {
+	fout<<",";
+	if(x!=sentinel)
+	  fout<<x;
+      }
+      fout <<","<<change_path.lane_id<<std::endl;
     }
+    fout<<std::flush;
   }
   if(fabs(ego_a)>amax*1.05 || fabs(ego_v)>max_speed*1.05) {
     std::cout<<"error : ego_a : "<<ego_a<<" ego_v : "<<ego_v<<std::endl<<" num_points : "<<xs.size()<<" prev_size : "<<np<<std::endl ;
